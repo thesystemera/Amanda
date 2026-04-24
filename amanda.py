@@ -377,7 +377,6 @@ class AmandaApp:
             my_gate.set()
 
     async def process_final_turn(self):
-        # Reset per-turn cache stats
         for d in config.DOMAINS:
             self.turn_cache_stats[d]["hits"] = 0
             self.turn_cache_stats[d]["misses"] = 0
@@ -444,8 +443,6 @@ class AmandaApp:
             _repetition_abort = False
 
             async def _extract_and_queue(buf):
-                # Regex treats &...& as atomic units so the period inside a proximity tag
-                # (e.g. &0.2&) doesn't trigger a sentence split.
                 while True:
                     m = re.match(r'(?:[^.!?&]|&[^&]*&)*[.!?]+', buf)
                     if not m:
@@ -639,12 +636,11 @@ class AmandaApp:
         win_w, win_h = 800, 1200
         win = pygame.display.set_mode((win_w, win_h), pygame.RESIZABLE | pygame.DOUBLEBUF)
 
-        # Pre-render gradient background for the mix graph (cool blue at bottom → warm amber at top)
         graph_w_tmp = win_w - 40
         graph_h_tmp = 130
         gradient_surf = pygame.Surface((graph_w_tmp, graph_h_tmp))
         for row in range(graph_h_tmp):
-            t = 1.0 - (row / graph_h_tmp)  # 0 at bottom, 1 at top
+            t = 1.0 - (row / graph_h_tmp)
             r = int(8 + t * 100)
             g = int(12 + t * 45)
             b = int(35 * (1.0 - t) + 8)
@@ -657,7 +653,7 @@ class AmandaApp:
 
         angles = np.linspace(0, 2 * np.pi, 12, endpoint=False)
         blob_history = np.zeros((12, 5))
-        mix_history = collections.deque(maxlen=300)  # 5s rolling @ 60fps
+        mix_history = collections.deque(maxlen=300)
         input_accumulator = np.array([], dtype=np.int16)
         display_color = np.array([255.0, 255.0, 255.0])
         last_status = ""
@@ -747,7 +743,6 @@ class AmandaApp:
             pts = np.array([avg_sizes * np.cos(angles), avg_sizes * np.sin(angles)]).T
             tck = interpolate.splprep([pts[:, 0], pts[:, 1]], s=0, per=True)[0]
             smooth = interpolate.splev(np.linspace(0, 1, 100), tck)
-            # Blob lives in its own zone: center y=300, max radius ~360 → y=-60 to 660
             poly = np.array(smooth).T + [win_w//2, 300]
 
             mood_target = np.array(self.brain.mood_color, dtype=np.float32)
@@ -771,7 +766,6 @@ class AmandaApp:
 
             pygame.draw.polygon(win, final_color, poly.astype(int))
 
-            # Sample spatial mix values for rolling graph
             if self.audio.global_spatial:
                 mv = self.audio.global_spatial.last_mix_values
                 mix_history.append((mv['spline'], mv['effective'], mv['pan']))
@@ -800,21 +794,17 @@ class AmandaApp:
                 win.blit(surf, (win_w - surf.get_width() - 20, y))
                 y += 18
 
-            # Rolling mix graph (EKG style) — full width, below blob, above transcript
             graph_x, graph_y = 20, 720
             graph_w, graph_h = win_w - 40, 130
             win.blit(gradient_surf, (graph_x, graph_y))
             pygame.draw.rect(win, (80, 80, 80), (graph_x, graph_y, graph_w, graph_h), 1)
 
-            # Grid lines + zone labels at 0.0, 0.5, 1.0
             zone_labels = [(0.0, "0.0", "CLOSE"), (0.5, "0.5", "MID"), (1.0, "1.0", "FAR")]
             for val, num_label, zone_label in zone_labels:
                 gy = graph_y + graph_h - int(val * graph_h)
                 pygame.draw.line(win, (60, 60, 60, 128), (graph_x, gy), (graph_x + graph_w, gy), 1)
-                # Numeric label on the left
                 surf = tiny_font.render(num_label, True, (160, 160, 160))
                 win.blit(surf, (graph_x - 30, gy - 6))
-                # Zone label on the right
                 zs = tiny_font.render(zone_label, True, (140, 140, 140))
                 win.blit(zs, (graph_x + graph_w + 6, gy - 6))
 
@@ -823,16 +813,13 @@ class AmandaApp:
                 for i in range(1, len(mix_history)):
                     x0 = graph_x + int((i - 1) * step)
                     x1 = graph_x + int(i * step)
-                    # Spline base (bright cyan)
                     y0_s = graph_y + graph_h - int(mix_history[i-1][0] * graph_h)
                     y1_s = graph_y + graph_h - int(mix_history[i][0] * graph_h)
                     pygame.draw.line(win, (0, 240, 255), (x0, y0_s), (x1, y1_s), 2)
-                    # Effective mix (bright orange)
                     y0_e = graph_y + graph_h - int(mix_history[i-1][1] * graph_h)
                     y1_e = graph_y + graph_h - int(mix_history[i][1] * graph_h)
                     pygame.draw.line(win, (255, 200, 60), (x0, y0_e), (x1, y1_e), 2)
 
-            # Legend (top-left inside graph)
             win.blit(tiny_font.render("spline", True, (0, 240, 255)), (graph_x + 8, graph_y + 4))
             win.blit(tiny_font.render("effective", True, (255, 200, 60)), (graph_x + 65, graph_y + 4))
 

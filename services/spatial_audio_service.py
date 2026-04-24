@@ -7,13 +7,7 @@ from pedalboard import Pedalboard, Reverb, Gain, HighShelfFilter, LowShelfFilter
 from noise import pnoise1  # type: ignore
 import config
 
-
 class StreamingSpatialProcessor:
-    """
-    Stateful chunk-by-chunk spatial processor for live TTS streams.
-    Maintains reverb tail across chunks — no buffering, no latency penalty.
-    Think of it as someone holding a volume knob, drifting toward target mix.
-    """
 
     def __init__(self, sample_rate: int, speaker: str = None, start_mix: float = 0.0):
         self.sample_rate = sample_rate
@@ -23,24 +17,18 @@ class StreamingSpatialProcessor:
         self._mix_noise_idx = 0.0
         self.fx_cfg = config.SPATIAL_AUDIO_CONFIG
 
-        # Spline state — reset on every set_target_mix()
         self._src_start_time = None
         self._src_start_mix = None
         self._src_target_mix = None
         self._src_next_mix = None
         self._src_duration = None
-        self._ramp_ratio = 0.25  # first/last 25% of clip for ramps
+        self._ramp_ratio = 0.25
 
-        # Exposed for real-time visualizer
         self.last_mix_values = {'spline': 0.0, 'effective': 0.0, 'pan': 0.0}
 
-        # Parallel signal path:
-        #   Dry: compressor → EQ (mic/preamp path, proximity-morphed)
-        #   Wet: reverb only (room ambience, receives raw panned signal)
         fx = self.fx_cfg
         c_cfg = fx['compressor']
 
-        # Dry board — mic signal: compression + proximity EQ
         self.dry_board = Pedalboard()
         self.compressor = Compressor(
             threshold_db=c_cfg['threshold_near'],
@@ -60,13 +48,12 @@ class StreamingSpatialProcessor:
         self.dry_board.append(self.high_shelf)
         self.dry_board.append(self.low_shelf)
 
-        # Wet board — room ambience: pure reverb, no dry pass-through
         self.wet_board = Pedalboard()
         self.reverb = Reverb(
             room_size=fx['reverb']['room_size'],
             damping=fx['reverb']['damping'],
             wet_level=fx['reverb']['wet_level'],
-            dry_level=0.0,  # wet only; dry is handled by dry_board + gain scaling
+            dry_level=0.0,
         )
         self.wet_board.append(self.reverb)
 
@@ -78,23 +65,18 @@ class StreamingSpatialProcessor:
         self._src_duration = float(duration_hint) if duration_hint is not None else None
 
     def _compute_mix(self):
-        """Time-based cosine spline: start ramp → hold → end ramp."""
         if self._src_duration is None or self._src_duration <= 0:
-            # No duration hint — gentle exponential drift
             return self.current_mix * 0.88 + self._src_target_mix * 0.12
 
         elapsed = time.time() - self._src_start_time
         ramp_time = self._src_duration * self._ramp_ratio
 
         if elapsed < ramp_time:
-            # Start ramp: start_mix → target_mix (cosine ease-in-out)
             t = elapsed / ramp_time
             return self._src_start_mix + (self._src_target_mix - self._src_start_mix) * (0.5 - 0.5 * np.cos(t * np.pi))
         elif elapsed < self._src_duration - ramp_time:
-            # Hold at target
             return self._src_target_mix
         else:
-            # End ramp: target_mix → next_mix (cosine ease-in-out)
             t = min(1.0, (elapsed - (self._src_duration - ramp_time)) / ramp_time)
             return self._src_target_mix + (self._src_next_mix - self._src_target_mix) * (0.5 - 0.5 * np.cos(t * np.pi))
 
@@ -102,12 +84,9 @@ class StreamingSpatialProcessor:
         if not pcm_mono_bytes:
             return b""
 
-        # Spline-based mix + Perlin jitter
         self.current_mix = self._compute_mix()
         mix_jitter = pnoise1(self._mix_noise_idx, octaves=1) * 0.04
         pan_jitter = pnoise1(self._pan_noise_idx, octaves=2, persistence=0.3, base=42) * 0.06
-        # Advance noise proportional to chunk length so timbre stays consistent
-        # regardless of AUDIO_CHUNK_SIZE. Tuned for 4096-byte (2048-frame) chunks.
         frame_ratio = len(pcm_mono_bytes) / 4096.0
         self._mix_noise_idx += 0.15 * frame_ratio
         self._pan_noise_idx += 0.02 * frame_ratio
@@ -115,14 +94,12 @@ class StreamingSpatialProcessor:
         effective_mix = np.clip(self.current_mix + mix_jitter, 0.0, 1.0)
         pan = np.clip(self.base_pan + pan_jitter, -1.0, 1.0)
 
-        # Expose for visualizer
         self.last_mix_values = {
             'spline': float(self.current_mix),
             'effective': float(effective_mix),
             'pan': float(pan),
         }
 
-        # Update dry-path parameters — proximity-morphed compressor + EQ
         fx = self.fx_cfg
         self.high_shelf.gain_db = fx['eq']['high_cut_near'] + (fx['eq']['high_cut_far'] - fx['eq']['high_cut_near']) * effective_mix
         self.high_shelf.cutoff_frequency_hz = fx['eq']['high_cut_freq_near'] + (fx['eq']['high_cut_freq_far'] - fx['eq']['high_cut_freq_near']) * effective_mix
@@ -132,25 +109,20 @@ class StreamingSpatialProcessor:
         self.compressor.threshold_db = c['threshold_near'] + (c['threshold_far'] - c['threshold_near']) * effective_mix
         self.compressor.ratio = c['ratio_near'] + (c['ratio_far'] - c['ratio_near']) * effective_mix
 
-        # Mono int16 → float32 stereo
         samples = np.frombuffer(pcm_mono_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         stereo = np.column_stack((samples, samples))
 
-        # Pan
         left_gain = np.cos((pan + 1) * np.pi / 4)
         right_gain = np.sin((pan + 1) * np.pi / 4)
         stereo[:, 0] *= left_gain
         stereo[:, 1] *= right_gain
 
-        # Parallel processing: raw → room reverb  |  raw → compressor → EQ → dry
         wet = self.wet_board(stereo, sample_rate=self.sample_rate, reset=False)
         dry = self.dry_board(stereo, sample_rate=self.sample_rate, reset=False)
 
-        # Mix: dry attenuates with proximity, wet stays constant (fixed room)
         dry_gain = fx['reverb']['dry_near'] + (fx['reverb']['dry_far'] - fx['reverb']['dry_near']) * effective_mix
         proc = dry * dry_gain + wet
 
-        # Clip and convert back to int16 bytes
         max_abs = np.max(np.abs(proc))
         if max_abs > 1.0:
             proc = proc / max_abs
@@ -159,11 +131,6 @@ class StreamingSpatialProcessor:
 
 
 class SpatialAudioService:
-    """
-    Real-time spatial audio processor ported from AI_RADIO.
-    Splits audio into 200 ms segments, applies Perlin-noise-driven
-    reverb / EQ / gain / pan variation, then crossfades back together.
-    """
 
     def __init__(self):
         self.segment_length_ms = 200
@@ -183,23 +150,12 @@ class SpatialAudioService:
     def process(
         self,
         audio_input,
-        sample_rate: int = 24000,
         speaker: str = None,
         mix: float = 1.0,
         previous_segment_end_mix: float = None,
         next_segment_start_mix: float = None,
     ) -> AudioSegment:
-        """
-        Process an audio clip through the spatial pipeline.
 
-        Args:
-            audio_input: file path (str), raw bytes, or pydub AudioSegment
-            sample_rate: target sample rate (only used when input is raw bytes)
-            speaker: voice name for base pan position
-            mix: 0.0 = dry, 1.0 = fully wet
-            previous_segment_end_mix: optional ramp from previous clip
-            next_segment_start_mix: optional ramp to next clip
-        """
         if not config.SPATIAL_AUDIO_ENABLED:
             if isinstance(audio_input, AudioSegment):
                 return audio_input
@@ -209,7 +165,6 @@ class SpatialAudioService:
                 return AudioSegment.from_file(io.BytesIO(audio_input), format="mp3")
             raise ValueError("Invalid audio input type")
 
-        # ── load into pydub ───────────────────────────────────────────────
         if isinstance(audio_input, str):
             audio = AudioSegment.from_file(audio_input, format="mp3")
         elif isinstance(audio_input, bytes):
@@ -224,12 +179,10 @@ class SpatialAudioService:
 
         audio = audio.fade_in(self.fade_duration).fade_out(self.fade_duration)
 
-        # ── segmentation ──────────────────────────────────────────────────
         crossfade_ms = int(self.segment_length_ms * self.crossfade_ratio)
         effective_segment_length = self.segment_length_ms - crossfade_ms
         num_segments = (len(audio) // effective_segment_length) + 1
 
-        # Perlin noise for organic variation
         mix_noise = self._normalize_noise(
             np.array([pnoise1(i * self.noise_scale, octaves=1) for i in range(num_segments)])
         )
@@ -238,7 +191,6 @@ class SpatialAudioService:
                       for i in range(num_segments)])
         )
 
-        # Base mix values with optional cross-clip ramps
         base_values = np.full(num_segments, mix)
         if previous_segment_end_mix is not None:
             ramp_length = num_segments // 3
@@ -263,7 +215,6 @@ class SpatialAudioService:
 
         fx_cfg = config.SPATIAL_AUDIO_CONFIG
 
-        # ── process segments ──────────────────────────────────────────────
         processed_segments = []
         for i in range(num_segments):
             start_ms = i * effective_segment_length
@@ -284,7 +235,6 @@ class SpatialAudioService:
                 samples[:, 0] *= left_gain
                 samples[:, 1] *= right_gain
 
-            # Build pedalboard — physical model: compressor → reverb → EQ
             board = Pedalboard()
 
             c_cfg = fx_cfg['compressor']
@@ -332,7 +282,6 @@ class SpatialAudioService:
             )
             processed_segments.append(proc_seg)
 
-        # ── crossfade stitch ──────────────────────────────────────────────
         final_audio = processed_segments[0]
         for seg in processed_segments[1:]:
             cf = min(len(seg), len(final_audio), crossfade_ms)
@@ -349,9 +298,7 @@ class SpatialAudioService:
         previous_segment_end_mix: float = None,
         next_segment_start_mix: float = None,
     ) -> bytes:
-        """
-        Convenience wrapper: raw mono int16 bytes → spatial stereo int16 bytes.
-        """
+
         audio = AudioSegment(
             data=pcm_bytes,
             sample_width=2,
@@ -370,10 +317,7 @@ class SpatialAudioService:
 
 
 def generate_room_tone(path: str, duration_s: float = 60.0, sample_rate: int = 24000):
-    """
-    Generate a looping brown-noise room-tone WAV.
-    Brown noise is deeper and more natural than white noise for room hiss.
-    """
+
     import soundfile as sf
 
     config.custom_print("Lifespan", f"Generating {duration_s:.0f}s brown-noise room tone → {path}")
@@ -381,23 +325,19 @@ def generate_room_tone(path: str, duration_s: float = 60.0, sample_rate: int = 2
 
     num_samples = int(duration_s * sample_rate)
 
-    # Brown noise: integrated white noise
     white = np.random.randn(num_samples)
     brown = np.cumsum(white)
-    # Normalize and high-pass slightly to remove DC drift
     brown = brown - np.mean(brown)
     brown = np.diff(brown, prepend=brown[0])
     brown = brown / (np.max(np.abs(brown)) + 1e-9)
 
-    # Fade in/out for seamless looping
     fade_samples = int(0.5 * sample_rate)
     fade_in = np.linspace(0, 1, fade_samples)
     fade_out = np.linspace(1, 0, fade_samples)
     brown[:fade_samples] *= fade_in
     brown[-fade_samples:] *= fade_out
 
-    # Reduce to very low level (room tone should be subtle)
-    brown *= 0.015  # ~-36 dBFS
+    brown *= 0.015
 
     sf.write(path, brown, sample_rate, subtype='PCM_16')
     config.custom_print("Lifespan", f"Room tone saved: {path}")

@@ -3,13 +3,7 @@ import numpy as np
 import sounddevice as sd
 from pydub import AudioSegment
 
-
 class RoomTonePlayer:
-    """
-    Continuous background room-tone loop that ducks under speech.
-    Uses a separate sounddevice callback stream so it lives independently
-    of the main audio pipeline.
-    """
 
     def __init__(self, path: str, sample_rate: int = 24000, volume_db: float = -42):
         self.path = path
@@ -49,25 +43,22 @@ class RoomTonePlayer:
             self._thread = None
 
     def speech_active(self):
-        """Ramp room tone up to base level when speech is happening."""
         with self._volume_lock:
             self._target_volume = self._base_volume
 
     def speech_inactive(self):
-        """Ramp room tone down to silence when speech ends."""
         with self._volume_lock:
             self._target_volume = 0.0
 
     def _run(self):
         idx = 0
         blocksize = 2048
-        ramp_coeff = 0.06  # per-block smoothing (~1.5s time constant)
+        ramp_coeff = 0.06
 
         def callback(outdata, frames, time_info, status):
             nonlocal idx
             with self._volume_lock:
                 target = self._target_volume
-            # Smooth exponential ramp toward target
             self._current_volume = self._current_volume * (1.0 - ramp_coeff) + target * ramp_coeff
             vol = self._current_volume
             needed = frames
@@ -80,7 +71,6 @@ class RoomTonePlayer:
                 idx = (idx + avail) % len(self._data)
 
         channels = self._data.shape[1]
-        # Ensure C-contiguous float32 array for sounddevice
         self._data = np.ascontiguousarray(self._data, dtype=np.float32)
 
         with sd.OutputStream(

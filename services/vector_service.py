@@ -10,7 +10,6 @@ from annoy import AnnoyIndex
 from sentence_transformers import SentenceTransformer
 import config
 
-
 class VectorService:
     def __init__(self):
         config.custom_print("Lifespan", f"VectorService: loading {config.EMBED_MODEL_NAME} on {config.DEVICE}...")

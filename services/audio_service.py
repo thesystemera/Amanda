@@ -31,7 +31,7 @@ class AudioJob:
         self.text = text
         self.channels = channels
         self.proximity = proximity
-        self.estimated_duration = None  # seconds, fuzzy predictor for spline timing
+        self.estimated_duration = None
         self.queue = queue.Queue()
         self.pcm_accumulator = bytearray()
         self.cancelled = False
@@ -75,17 +75,14 @@ class AudioService:
         self.spatial = SpatialAudioService()
         self.last_voice_proximity = config.DEFAULT_MIC_PROXIMITY
 
-        # Room tone (stolen from AI_RADIO frontend)
         if not os.path.exists(config.ROOM_TONE_PATH):
             config.custom_print("Lifespan", f"WARNING: Room tone not found at {config.ROOM_TONE_PATH}")
         self.room_tone = RoomTonePlayer(config.ROOM_TONE_PATH, sample_rate=config.TTS_SAMPLE_RATE, volume_db=-42)
         self.room_tone.start()
 
-        # Global stereo output stream — one continuous stream for everything
         self._output_stream = None
         self._init_output_stream()
 
-        # Master spatial processor — reverb tail carries across ALL audio
         if config.SPATIAL_AUDIO_ENABLED:
             from services.spatial_audio_service import StreamingSpatialProcessor
             self.global_spatial = StreamingSpatialProcessor(
@@ -169,7 +166,6 @@ class AudioService:
                 self._load_or_create_manifest(directory)
             files = self.manifest_cache.get(directory, [])
         else:
-            # Non-random directories: list directly without manifest
             files = [f for f in os.listdir(directory) if f.endswith('.mp3')]
 
         if not files:
@@ -202,7 +198,6 @@ class AudioService:
                 log_detail = "[stream]"
             config.custom_print("Play", f"[{event_type}/play] {log_detail}")
 
-            # Peek next item's proximity for end-of-source spline ramping
             next_proximity = proximity
             if not self.playback_queue.empty():
                 try:
@@ -211,10 +206,8 @@ class AudioService:
                 except (IndexError, Exception):
                     pass
 
-            # Collect all audio sources to play sequentially through the global bus
             sources = []
 
-            # Breath between consecutive tts clips
             if event_type == "tts" and last_event_type == "tts":
                 breath = self.get_random_from_dir(config.AUDIO_DIRS['breath'])
                 if breath:
@@ -228,7 +221,6 @@ class AudioService:
                         breath_job.finish()
                         sources.append((breath_job, self.last_voice_proximity))
 
-            # Main audio source
             if isinstance(item, str):
                 pcm, sr = self._decode_mp3(item)
                 if pcm:
@@ -241,14 +233,11 @@ class AudioService:
             elif isinstance(item, AudioJob):
                 sources.append((item, proximity))
 
-            # Play everything sequentially through the global spatial processor & output stream
             if sources:
                 self.is_playing.set()
                 self.room_tone.speech_active()
                 for i, (src, src_proximity) in enumerate(sources):
                     if self.global_spatial:
-                        # For the last source, ramp toward next_proximity at the end.
-                        # For earlier sources (breath), ramp toward the following source.
                         next_mix = sources[i + 1][1] if i + 1 < len(sources) else next_proximity
                         self.global_spatial.set_target_mix(
                             src_proximity,
@@ -265,11 +254,6 @@ class AudioService:
             self.playback_queue.task_done()
 
     def _play_job_chunks(self, job):
-        """Feed an AudioJob's chunks continuously through the global spatial processor.
-
-        No overlap-add — reverb is stateful and its tail must flow uninterrupted.
-        Small chunk size (1024 bytes ≈ 21 ms) makes parameter changes inaudible.
-        """
         pending_odd = b""
         while True:
             if self.interrupted:
@@ -284,7 +268,6 @@ class AudioService:
             if chunk is None:
                 break
 
-            # Keep mono int16 alignment
             raw = pending_odd + chunk
             if len(raw) % 2:
                 pending_odd = raw[-1:]
@@ -318,7 +301,7 @@ class AudioService:
                 samplerate=config.TTS_SAMPLE_RATE,
                 channels=2,
                 dtype='int16',
-                latency=0.05,  # 50ms buffer — enough headroom without latency bloat
+                latency=0.05,
             )
             self._output_stream.start()
         except Exception as e:
@@ -335,4 +318,3 @@ class AudioService:
         except Exception as e:
             config.custom_print("Error", f"AudioService._decode_mp3 failed for {path}: {e}")
             return None, None
-

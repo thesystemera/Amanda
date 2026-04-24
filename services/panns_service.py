@@ -96,14 +96,12 @@ class PANNsService:
         try:
             (clipwise, _) = self.at.inference(audio)
 
-            # Update baselines (very slow moving average) and accumulators
             speech_accum = {}
             other_accum = {}
             for label, prob in zip(self.at.labels, clipwise[0]):
                 prob = float(prob)
                 label_lower = label.lower()
 
-                # Baseline: what is "normal" for this environment
                 self.baseline[label] = self.baseline.get(label, 0.0) * 0.995 + prob * 0.005
 
                 if label_lower in SPEECH_DETECTION_TAGS_LOWER:
@@ -113,7 +111,6 @@ class PANNsService:
                     self.prediction_accumulator_other[label] = self.prediction_accumulator_other.get(label, 0.0) * config.OTHER_AUDIO_DECAY_FACTOR + prob
                     other_accum[label] = self.prediction_accumulator_other[label]
 
-            # Rank by accumulated score minus baseline (what's ABNORMAL / notable)
             speech_ranked = sorted(
                 [(l, s - self.baseline.get(l, 0.0)) for l, s in speech_accum.items()],
                 key=lambda x: x[1], reverse=True
@@ -126,10 +123,8 @@ class PANNsService:
             top_speech_tags = [tag for tag in speech_ranked if tag[1] > config.CLASSIFICATION_SPEECH_DETECTION_THRESHOLD][:5]
             top_other_tags = [tag for tag in other_ranked if tag[1] > config.CLASSIFICATION_OTHER_AUDIO_THRESHOLD][:5]
 
-            # Speech score from accumulated values
             self.total_speech_score = sum(float(score) for _, score in top_speech_tags)
 
-            # Build display string from top OTHER tags (environmental sounds)
             self.top_tags_str = ", ".join(f"{label} ({score:.2f})" for label, score in top_other_tags[:5])
             config.custom_print("Audio Classification", f"PANNs result: speech_score={self.total_speech_score:.2f} | tags={self.top_tags_str or '(none)'}")
 

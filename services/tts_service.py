@@ -94,7 +94,6 @@ class TTSService:
             pcm_bytes = bytes(pcm_data) if isinstance(pcm_data, (bytearray, memoryview)) else pcm_data
             mp3_data = bytes(enc.encode(pcm_bytes)) + bytes(enc.flush())
 
-            # Tag in-memory before writing to disk (avoids mutagen double-write)
             buf = io.BytesIO(mp3_data)
             audio = MP3(buf)
             if audio.tags is None:

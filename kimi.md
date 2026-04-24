@@ -43,6 +43,11 @@ E:\Amanda
     └── vector/{tts,impulse,meta,interject,interrupt}_embeddings.{db,ann}
 ```
 
+> **Note on `amanda_legacy_reference.py`**: This file (~2,200 lines) is preserved
+> purely for human reference — it is **not imported** by the application and
+> contains superseded logic that now lives in `services/`. Do not refactor, lint,
+> or flag it as dead code unless the human explicitly asks.
+
 The old Flask web app / Spotify DJ integration was removed 2026-04-18. On
 2026-04-19 the `E:\TTS_Local` project was merged into `E:\Amanda` and the
 shared venv was rebuilt on Python 3.12.

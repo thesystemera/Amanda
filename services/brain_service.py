@@ -5,43 +5,25 @@ import re
 import datetime
 from google.genai import types
 import config
-from services.gemini_service import GeminiService
-
 
 def _is_severely_repetitive(text, repeat_threshold=8, min_repeat_len=2):
-    """
-    Detect if text is stuck in a severe repetition loop.
-    Looks for the same short substring repeating many times in a row.
-    Returns True if the text appears to be a broken loop.
-    """
     if not text:
         return False
-    # Check for patterns like "I-I-I-I-" or "I, I, I, I, " or "I I I I "
-    # Look for a short token (1-4 chars) repeated with separators
     for length in range(min_repeat_len, 6):
-        # Pattern: token followed by separator, repeated N times
         pattern = rf"((?:\b\w{{{length}}}\b[\s,\-–—]{{0,2}}){{{repeat_threshold},}})"
         if re.search(pattern, text, re.IGNORECASE):
             return True
-        # Also check for raw repetition without word boundaries: "aaaaaa"
         pattern2 = rf"(.{{{length}}})\1{{{repeat_threshold - 1},}}"
         if re.search(pattern2, text):
             return True
-    # Check for excessive single-character repetition
     if re.search(r"(.)\1{15,}", text):
         return True
     return False
 
-
 def _sanitize_chat_log_for_prompt(chat_log, max_repetitive_chars=200):
-    """
-    Sanitize chat log entries before putting them in the prompt.
-    If an entry is severely repetitive, truncate it and mark it.
-    """
     sanitized = []
     for entry in chat_log:
         if _is_severely_repetitive(entry):
-            # Truncate to a reasonable length and mark as [repetitive output truncated]
             truncated = entry[:max_repetitive_chars] + " ... [repetitive output truncated]"
             sanitized.append(truncated)
         else:
@@ -159,8 +141,6 @@ class BrainService:
     async def generate_stream(self, transcribed_text, audio_tags="", mood_str="", meta_tags_prompt="", impulse_subtitle=""):
         sanitized_log = _sanitize_chat_log_for_prompt(self.chat_log)
 
-        # Truly static system instruction — hardcoded text only.
-        # Persona, profile, meta tags and transcript are dynamic and belong in contents.
         system_instruction = (
             "As [Assistant], you are currently engaged in a live audio (phone) conversation with [User]. You possess the "
             "capability to authentically express and simulate the entire spectrum of human emotions. Furthermore, you can "
@@ -195,7 +175,6 @@ class BrainService:
         current_timestamp = datetime.datetime.now().strftime("[%H:%M:%S]")
         user_input_content = " ".join([mood_str, audio_tags, transcribed_text]).strip()
 
-        # Build dynamic user message: meta tags, long-term memory, transcript, current turn.
         dynamic_parts = []
         if meta_tags_prompt:
             dynamic_parts.append(meta_tags_prompt)
@@ -461,7 +440,6 @@ class BrainService:
     def add_to_log(self, role, text):
         ts = datetime.datetime.now().strftime("[%H:%M:%S]")
         entry = f"{ts} [{role}] {text}"
-        # Block severely repetitive assistant outputs from poisoning the log
         if role == "Assistant" and _is_severely_repetitive(text):
             config.custom_print("Error", f"Blocked repetitive assistant output from chat log: {text[:80]}...")
             entry = f"{ts} [{role}] [repetitive output discarded]"
