@@ -3,7 +3,7 @@ import os
 import time
 import numpy as np
 from pydub import AudioSegment
-from pedalboard import Pedalboard, Reverb, Gain, HighShelfFilter, LowShelfFilter, Compressor  # type: ignore
+from pedalboard import Pedalboard, Reverb, HighShelfFilter, LowShelfFilter, Compressor  # type: ignore
 from noise import pnoise1  # type: ignore
 import config
 

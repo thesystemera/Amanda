@@ -55,7 +55,7 @@ class RoomTonePlayer:
         blocksize = 2048
         ramp_coeff = 0.06
 
-        def callback(outdata, frames, time_info, status):
+        def callback(outdata, frames, _time_info, status):
             nonlocal idx
             with self._volume_lock:
                 target = self._target_volume

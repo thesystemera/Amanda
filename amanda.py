@@ -74,9 +74,9 @@ class AmandaApp:
                 interrupted_text = self.audio.current_playing_text
                 self.audio.interrupt()
                 self.clear_sentence_queue()
-                asyncio.run_coroutine_threadsafe(self.tts.abort_all(), self.loop)
+                self._safe_run_coro(self.tts.abort_all())
                 if interrupted_text:
-                    asyncio.run_coroutine_threadsafe(self.trigger_interrupt_logic(interrupted_text), self.loop)
+                    self._safe_run_coro(self.trigger_interrupt_logic(interrupted_text))
                 else:
                     filler = self.audio.get_random_from_dir(config.AUDIO_DIRS['interrupt'])
                     if filler: self.audio.play_file(filler, "interrupt")
@@ -108,6 +108,14 @@ class AmandaApp:
                 self.sentence_queue.task_done()
             except asyncio.QueueEmpty: break
 
+    def _safe_run_coro(self, coro):
+        if self.loop and self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    def _safe_call_soon(self, callback, *args):
+        if self.loop and self.loop.is_running():
+            self.loop.call_soon_threadsafe(callback, *args)
+
     def stop_recording(self, _):
         if self.recording:
             config.custom_print("Info", "Space bar released: Recording stopped.")
@@ -116,14 +124,14 @@ class AmandaApp:
             self.ui_status = "TRANSCRIBING..."
             self.ui_status_color = (255, 255, 0)
             self.awaiting_response = True
-            self.loop.call_soon_threadsafe(self.tts.set_active, True)
+            self._safe_call_soon(self.tts.set_active, True)
             prelude = self.audio.get_random_from_dir(config.AUDIO_DIRS['prelude'])
             if prelude:
                 config.custom_print("Play", f"[prelude/random] {os.path.basename(prelude)}")
                 self.audio.play_file(prelude, "prelude")
-            asyncio.run_coroutine_threadsafe(self.process_final_turn(), self.loop)
+            self._safe_run_coro(self.process_final_turn())
 
-    def audio_input_callback(self, indata, frames, time_info, status):
+    def audio_input_callback(self, indata, _frames, _time_info, _status):
         if self.audio.is_playing.is_set() and not self.recording:
             return
         self.panns.feed_audio(indata)
@@ -249,9 +257,13 @@ class AmandaApp:
             return text, proximity
         return text, config.DEFAULT_MIC_PROXIMITY
 
-    async def _dispatch_utterance(self, text, domain, fname=None):
+    def _extract_meta_tags(self, text):
         meta_tags = [t.strip() for t in re.findall(r'\*([^*]+)\*', text)]
         clean = re.sub(r'\*[^*]+\*', '', text).strip()
+        return meta_tags, clean
+
+    async def _dispatch_utterance(self, text, domain, fname=None):
+        meta_tags, clean = self._extract_meta_tags(text)
         clean, proximity = self._parse_proximity(clean)
 
         meta_tasks = [asyncio.create_task(
@@ -328,8 +340,7 @@ class AmandaApp:
 
     async def _handle_sentence(self, sentence, prev_gate, my_gate):
         try:
-            meta_tags = [t.strip() for t in re.findall(r'\*([^*]+)\*', sentence)]
-            clean = re.sub(r'\*[^*]+\*', '', sentence).strip()
+            meta_tags, clean = self._extract_meta_tags(sentence)
             clean, proximity = self._parse_proximity(clean)
             meta_tasks = [asyncio.create_task(
                 self.vector.query(tag, domain="meta", threshold=0.0, force_best=True)
@@ -451,8 +462,7 @@ class AmandaApp:
                     buf = buf[m.end():]
                     if sentence:
                         await self.sentence_queue.put((sentence, False))
-                        meta_tags = [t.strip() for t in re.findall(r'\*([^*]+)\*', sentence)]
-                        clean = re.sub(r'\*[^*]+\*', '', sentence).strip()
+                        meta_tags, clean = self._extract_meta_tags(sentence)
                         response_parts.append((meta_tags, clean))
                         meta_str = f" meta={meta_tags}" if meta_tags else ""
                         config.custom_print("Sentence Splitter", f"SEGMENT: {sentence!r}{meta_str} | clean={clean!r}")
@@ -499,8 +509,7 @@ class AmandaApp:
             tail = current_sentence_buf.strip()
             if tail:
                 await self.sentence_queue.put((tail, True))
-                meta_tags = [t.strip() for t in re.findall(r'\*([^*]+)\*', tail)]
-                clean = re.sub(r'\*[^*]+\*', '', tail).strip()
+                meta_tags, clean = self._extract_meta_tags(tail)
                 response_parts.append((meta_tags, clean))
                 meta_str = f" meta={meta_tags}" if meta_tags else ""
                 config.custom_print("Sentence Splitter", f"TAIL: {tail!r}{meta_str} | clean={clean!r}")
@@ -612,16 +621,15 @@ class AmandaApp:
                     break
             t_end = time.time()
             config.custom_print("BENCH", f"create={((t_create-t0)*1000):.0f}ms | ttft={((first-t0)*1000):.0f}ms | first_chunk='{chunk}'")
-        asyncio.run_coroutine_threadsafe(_bench(), self.loop)
+        self._safe_run_coro(_bench())
 
     def exit_app(self):
         self.brain.save_state()
-        if self.loop:
-            self.loop.call_soon_threadsafe(self.loop.stop)
+        self._safe_call_soon(self.loop.stop)
 
     async def _startup(self):
         await self.brain.warm_up()
-        self.stt.set_chunk_handler(lambda chunk: asyncio.run_coroutine_threadsafe(self.handle_realtime_chunk(chunk), self.loop))
+        self.stt.set_chunk_handler(lambda chunk: self._safe_run_coro(self.handle_realtime_chunk(chunk)))
         def _on_panns(score, tags):
             self.stt.total_speech_score = score
             self.stt.last_audio_tags = tags

@@ -55,7 +55,7 @@ class TTSService:
     async def generate_silence(self, folder, title):
         silence_bytes = int(config.TTS_SAMPLE_RATE * config.SILENCE_CACHE_DURATION_S) * 2
         silence_pcm = b'\x00' * silence_bytes
-        asyncio.get_event_loop().run_in_executor(None,
+        asyncio.get_running_loop().run_in_executor(None,
             self._save_cache, silence_pcm, title, "SILENCE", folder)
 
     async def _fetch_stream(self, text, job, folder, tag_title, tag_subtitle, prio):
@@ -85,7 +85,7 @@ class TTSService:
         finally:
             job.finish()
             if not job.cancelled and len(job.pcm_accumulator) > 0:
-                asyncio.get_event_loop().run_in_executor(None,
+                asyncio.get_running_loop().run_in_executor(None,
                     self._save_cache, job.pcm_accumulator, tag_title, tag_subtitle, folder, prio)
 
     def _save_cache(self, pcm_data, title, subtitle, folder, prio=_PRIO_HIGH):

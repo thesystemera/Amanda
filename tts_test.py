@@ -22,7 +22,6 @@ import time
 import wave
 import json
 import queue
-import struct
 import threading
 from datetime import datetime
 from urllib.request import urlopen, Request
