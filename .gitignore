@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Project runtime / generated data
+data/audio/
+data/vector/
+keys/
+.cache
+last_state.json
+
+# Secrets & legacy files with hardcoded credentials
+api_secrets.py
+amanda_legacy_reference.py
+
+# Generated manifests (random pool caches)
+data/audio/*/small_mp3_manifest_*.json
+
+# Audio files
+*.mp3
+*.wav
+
+# Local IDE / debug artifacts
+.claude/
+debug/
+
+# OS
+.DS_Store
+Thumbs.db

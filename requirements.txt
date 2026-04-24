@@ -1,0 +1,36 @@
+# Amanda — Python dependencies
+# Core runtime
+numpy
+sounddevice
+pygame
+scipy
+pydub
+pedalboard
+noise
+soundfile
+colorama
+
+# AI / ML
+torch
+faster-whisper
+sentence-transformers
+panns-inference
+samplerate
+
+# LLM / TTS
+llama-cpp-python
+orpheus-cpp
+
+# APIs / web
+flask
+httpx
+google-genai
+openai
+
+# Data / audio metadata
+mutagen
+annoy
+pillow
+
+# Optional / dev
+lameenc
