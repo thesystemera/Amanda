@@ -7,27 +7,37 @@ multi-layered latency masking.
 > **Note:** This file reflects the codebase as of the latest edit. `CLAUDE.md`
 > is the original agent guide; use this file when they conflict.
 
+**Repository:** https://github.com/thesystemera/Amanda
+
 ## Repository layout
 
 ```
 E:\Amanda
 ├── amanda.py                      # Tk UI + event loop + audio input callback
 ├── config.py                      # Paths, thresholds, ml_executor, custom_print
-├── api_secrets.py                 # Gemini API key (do not commit)
+├── api_secrets.py                 # Loads GEMINI_API_KEY from env or keys/ (gitignored)
+├── api_secrets.py.example         # Template showing the loader pattern
+├── requirements.txt               # Core Python dependencies
 ├── tts_server_orpheus.py          # Local Orpheus 3B HTTP TTS server
 ├── tts_server_bootstrap.py        # Auto-starts/stops the Orpheus server as child process
 ├── tts_test.py                    # CLI exerciser for the TTS server
 ├── tts_cache_vectorr_management.py# Offline indexing / cache utilities for Annoy indices
-├── meta_data_editor.py            # Standalone tag/metadata editor
+├── meta_data_editor.py            # Standalone PyQt5 tag/metadata editor (Gemini backend)
 ├── last_state.json                # Persisted persona + chat log
-├── CLAUDE.md                      # Original agent guide (legacy)
+├── LOCAL_LLM_GUIDE.md             # P6000 (24GB VRAM) local inference reference
+├── CLAUDE.md                      # Original agent guide
 ├── kimi.md                        # This file
 ├── services/
-│   ├── audio_service.py           # Playback queue, pygame mixer, visualiser feed
-│   ├── brain_service.py           # Gemini client, persona, mood, streaming generate
-│   ├── transcription_service.py   # Silero VAD v5, dual Whisper, PANNs classification
+│   ├── audio_service.py           # Playback queue, pygame mixer, global spatial processor, visualiser feed
+│   ├── brain_service.py           # Persona, mood, streaming generate, prompt builders
+│   ├── gemini_service.py          # google-genai client wrapper + warm-up pools
+│   ├── panns_service.py           # PANNs AudioTagging inference worker
+│   ├── room_tone_service.py       # Continuous background room-tone loop
+│   ├── spatial_audio_service.py   # StreamingSpatialProcessor + SpatialAudioService (pedalboard pipeline)
+│   ├── transcription_service.py   # Silero VAD v5, dual Whisper pipeline, chunk handler
 │   ├── tts_service.py             # HTTP client to tts_server_orpheus + MP3 cache writer
-│   └── vector_service.py          # T5 encoder + Annoy index loaders + query
+│   ├── vector_service.py          # Sentence-transformers encoder + Annoy index loaders + query
+│   └── whisper_service.py         # faster-whisper model loader + threaded inference queue
 └── data/
     ├── audio/{tts,impulse,meta,interject,interrupt,prelude,breath,interlude}/
     └── vector/{tts,impulse,meta,interject,interrupt}_embeddings.{db,ann}
@@ -47,8 +57,16 @@ shared venv was rebuilt on Python 3.12.
   harmless and safe to ignore)
 - **faster-whisper** (CTranslate2 backend, float16 on CUDA)
 - **llama-cpp-python + orpheus-cpp** for the TTS server (GGUF + CUDA build)
+- **pedalboard + noise** for real-time spatial audio effects
+- **PyQt5** for `meta_data_editor.py`
+- **google-genai** for Gemini client (`brain_service`, `gemini_service`, `meta_data_editor`)
 - **Windows-only**: uses `win32gui`, `sounddevice`, `samplerate`
 - **GPU strongly recommended** — Whisper + T5 + PANNs + Orpheus all run on CUDA
+
+Install dependencies via:
+```powershell
+E:\Amanda\.venv\Scripts\pip.exe install -r E:\Amanda\requirements.txt
+```
 
 ## Running
 
@@ -61,16 +79,21 @@ E:\Amanda\.venv\Scripts\python.exe E:\Amanda\amanda.py
 Expected startup sequence (watch for the `Lifespan:` lines):
 
 ```
-Lifespan: TTS bootstrap launching Orpheus subprocess...
-Lifespan: VectorService: loading T5 encoder (google/flan-t5-large) on cuda...
+Lifespan: VectorService: loading sentence-transformers/all-MiniLM-L6-v2 on cuda...
 Lifespan: VectorService: ready (N indexed items across 5 domains).
 Lifespan: AudioService: initialising pygame mixer @ 24kHz mono...
-Lifespan: AudioService: ready.
+Lifespan: AudioService: ready (global stereo output @ 24000Hz, spatial=True).
 Lifespan: TTSService: HTTP client -> http://localhost:8080 (voice=tara).
-Lifespan: BrainService: Gemini client for model gemini-3.1-flash-lite-preview.
+Lifespan: GeminiService: initializing client...
 Lifespan: BrainService: ready.
-Lifespan: TranscriptionService: loading Whisper + PANNs on CUDA...
+Lifespan: WhisperService: loading distil-small.en + large-v3-turbo on CUDA...
+Lifespan: WhisperService: ready.
+Lifespan: TranscriptionService: loading Silero VAD v5 on cuda...
 Lifespan: TranscriptionService: ready.
+Lifespan: PANNsService: loading AudioTagging on CUDA...
+Lifespan: PANNsService: ready.
+Lifespan: GeminiService: warming up model pools...
+Lifespan: GeminiService: ready (Xms).
 Lifespan: TTS server is ready (bootstrap /health ok).
 ```
 
@@ -80,6 +103,11 @@ cleanly — scan for a preceding `Error:` line.
 Standalone TTS server test (server only, skips the app):
 ```powershell
 E:\Amanda\.venv\Scripts\python.exe E:\Amanda\tts_test.py
+```
+
+Standalone metadata editor:
+```powershell
+E:\Amanda\.venv\Scripts\python.exe E:\Amanda\meta_data_editor.py
 ```
 
 ## TTS server lifecycle (`tts_server_bootstrap`)
@@ -98,9 +126,10 @@ service is constructed. Bootstrap behaviour:
    5-second grace, then kill). A crash of `amanda.py` still takes the server
    down.
 
-The server itself is a single-worker, FIFO-queue Flask app. One Orpheus engine,
-one thread pulling `Job`s, MP3 or PCM streamed back per-HTTP-request. Max
-queue depth is 16 — overflow returns HTTP 503.
+The server itself is a multi-worker Flask app with a FIFO job queue. Two
+Orpheus engines (`TTS_NUM_WORKERS=2`), one thread pulling `Job`s per engine,
+MP3 or PCM streamed back per-HTTP-request. Max queue depth is 16 — overflow
+returns HTTP 503.
 
 ## Services
 
@@ -114,16 +143,54 @@ backlog of realtime chunks can't starve the default executor that
 ### AudioService (`services/audio_service.py`)
 - `playback_queue` (asyncio) + single `start_worker` consumer.
 - Decodes MP3s via pygame, streams PCM via `sounddevice.RawOutputStream` at
-  24 kHz mono int16.
+  24 kHz **stereo** int16 (global spatial processor outputs stereo).
+- **Global spatial processor**: `StreamingSpatialProcessor` lives inside
+  `AudioService` and processes *all* TTS/job audio through a single stateful
+  pipeline so reverb tails and compressor envelopes carry across utterances.
 - Interrupt handling: `interrupt()` drains the queue and flips `interrupted`
   so the currently-streaming job aborts.
 - Also writes into `visualizer_queue` for the pygame visualiser thread.
 - `get_random_from_dir(domain)` picks a random MP3 from any audio subdirectory.
 
+### SpatialAudioService / StreamingSpatialProcessor (`services/spatial_audio_service.py`)
+
+Two classes:
+
+- **`StreamingSpatialProcessor`** — stateful chunk-by-chunk processor used for
+  live TTS streams. Maintains reverb tail and compressor envelope across
+  chunks with **zero buffering / zero latency penalty**.
+- **`SpatialAudioService`** — offline clip processor (200 ms segments + Perlin
+  noise + crossfades). Used for file-based playback when a global stream
+  processor is not appropriate.
+
+**Parallel dual-board architecture (StreamingSpatialProcessor)**
+
+Instead of a single Pedalboard per chunk, the processor runs two boards in
+parallel and mixes their outputs in numpy:
+
+- **`dry_board`** — mic/preamp path: `Compressor -> HighShelfFilter -> LowShelfFilter`.
+  Parameters are proximity-morphed (close-talk vs. far) every chunk.
+- **`wet_board`** — room ambience: `Reverb` with `dry_level=0.0` (pure wet).
+  Receives the raw panned signal. Wet level stays constant; perceived
+  wetness increases only because the dry path attenuates with distance.
+
+Both boards are called with **`reset=False`** so internal delay lines and
+envelopes persist across chunks. This fixes the previous tail-drop bug where
+Pedalboard's default `reset=True` was zeroing the Reverb state every chunk.
+
+Mix formula:
+```
+dry_gain = dry_near + (dry_far - dry_near) * effective_mix
+proc = dry * dry_gain + wet
+```
+
+Perlin noise drives sub-sonic pan and mix jitter so the image breathes
+organically.
+
 ### TranscriptionService (`services/transcription_service.py`)
 - Dual faster-whisper: `distil-small.en` (realtime, low latency) and
   `large-v3-turbo` (accurate final turn). Both `float16` on CUDA.
-- **Silero VAD v5** (CPU) for voice-activity detection. Operates on 32 ms
+- **Silero VAD v5** (CPU/GPU) for voice-activity detection. Operates on 32 ms
   frames (512 samples @ 16 kHz). Speech probability threshold is
   `VAD_SPEECH_THRESHOLD = 0.4` (0.5 is canonical; 0.4 is more permissive for
   desktop mics).
@@ -138,13 +205,28 @@ backlog of realtime chunks can't starve the default executor that
   250 keeps inter-sentence boundaries crisp without splitting on mid-word
   pauses with Silero).
 
+### WhisperService (`services/whisper_service.py`)
+Dedicated threaded queue wrapper around the two faster-whisper models.
+Decouples model loading from `TranscriptionService` so each can be started
+and torn down independently.
+
+### PANNsService (`services/panns_service.py`)
+Threaded inference worker for `panns_inference.AudioTagging`. Maintains a
+rolling 4-second audio buffer resampled to 16 kHz and emits top-k labels
+with confidence scores.
+
+### GeminiService (`services/gemini_service.py`)
+Thin wrapper around `google.genai.Client`. On startup it warms both the task
+and chat model pools with a 1-token dummy generation so the first real
+request avoids cold-start latency.
+
 ### VectorService (`services/vector_service.py`)
-- Loads FLAN-T5-Large encoder (1024-dim) + five Annoy indices
-  (`tts`, `impulse`, `meta`, `interject`, `interrupt`), plus corresponding
-  SQLite `_embeddings.db` files with (`filename`, `title`, `subtitle`,
-  `embedding`) rows.
-- `query(text, domain, ...)` encodes via `tokenizer(...)` →
-  `model(**inputs)` → `last_hidden_state[0][-1]`. Errors are logged loudly
+- Loads `sentence-transformers/all-MiniLM-L6-v2` encoder (384-dim) + five Annoy
+  indices (`tts`, `impulse`, `meta`, `interject`, `interrupt`), plus
+  corresponding SQLite `_embeddings.db` files with (`filename`, `title`,
+  `subtitle`, `embedding`) rows.
+- `query(text, domain, ...)` encodes via `tokenizer(...)` ->
+  `model(**inputs)` -> mean-pooled hidden state. Errors are logged loudly
   and the query returns `[]` so the caller can fall back.
 - Missing `.ann` / `.db` files are tolerated — the index starts empty and
   fills as the cache rebuilds.
@@ -152,7 +234,7 @@ backlog of realtime chunks can't starve the default executor that
   domain, used by impulse generation to seed emotional direction.
 
 ### TTSService (`services/tts_service.py`)
-- `httpx.AsyncClient` → `POST {TTS_SERVER_URL}/tts` with
+- `httpx.AsyncClient` -> `POST {TTS_SERVER_URL}/tts` with
   `{"text", "voice", "format": "pcm", "max_tokens"}`.
 - **Dynamic Token Sizing**: `max_tokens = len(text) * 20`. This ensures a
   generous, relative budget that prevents the "slow-speaking" issue on short
@@ -167,10 +249,10 @@ backlog of realtime chunks can't starve the default executor that
   until `set_active(False)` is called at turn end.
 
 ### BrainService (`services/brain_service.py`)
-- Single `google.genai.Client` for all Gemini calls.
+- Uses `GeminiService` client for all Gemini calls.
 - `generate_stream` — streaming realtime response used by
   `amanda.process_final_turn` (sentence-by-sentence playback).
-- `update_mood` — periodic mood scoring (8 emotional states → RGB blob
+- `update_mood` — periodic mood scoring (8 emotional states -> RGB blob
   colour).
 - `extract_persona` — condenses persona + profile into `last_state.json`
   (guarded by `DISABLE_EXTRACT_BACKSTORY_AND_NOTES`).
@@ -182,21 +264,21 @@ backlog of realtime chunks can't starve the default executor that
 ```
 sounddevice input (default samplerate)
   └─► audio_input_callback (amanda.py)
-       ├─► every 4s: stt.run_classification (PANNs)
+       ├─► every 4s: panns.run_classification (PANNsService)
        ├─► on speech score threshold: play prelude/* once per turn
        └─► stt.process_audio (Silero VAD + RMS gates)
              └─► yields chunks -> handle_realtime_chunk
-                    └─► stt.transcribe(mode="realtime")   [ml_executor]
+                    └─► whisper.transcribe(mode="realtime")   [ml_executor]
                           └─► vector.query(domain="interject") [ml_executor]
                                └─► audio.play_file  (interject/*.mp3)
 
 on space-release:
-  stop_recording → process_final_turn (asyncio)
-    1. stt.get_full_audio() → stt.transcribe(mode="accurate")
-    2. trigger_impulse_logic(text) → vector.query("impulse") → _dispatch_utterance
-    3. brain.generate_stream(...)  [streams via google-genai]
+  stop_recording -> process_final_turn (asyncio)
+    1. stt.get_full_audio() -> fast fallback OR realtime_text_parts -> impulse
+    2. stt.get_full_audio() -> whisper.transcribe(mode="accurate")  (parallel)
+    3. wait impulse gate -> log user -> log impulse -> brain.generate_stream(...)
          per sentence:
-           _dispatch_utterance(sentence, "tts")  (meta tags → vector.query("meta"), then tts/cache)
+           _dispatch_utterance(sentence, "tts")  (meta tags -> vector.query("meta"), then tts/cache)
     4. thinking_monitor polls for interlude/* filler while waiting for sentences
   finally: label resets to IDLE, tts.set_active(False) (guarded try/except/finally)
 ```
@@ -228,8 +310,8 @@ without serialising preparation:
 
 - `TTS_SERVER_URL`, `TTS_VOICE` — `tara|leah|jess|leo|dan|mia|zac|zoe`
 - `TTS_SIMILARITY_THRESHOLD = 0.75` — TTS cache hit cutoff
-- `CACHE_GENERATE_SIMILARITY_CUTOFF = 0.7` — below this, a missed cache
-  lookup triggers a background Gemini → TTS generation to warm the cache
+- `CACHE_SIMILARITY_THRESHOLD = 0.60` — below this, a missed cache lookup
+  triggers a background Gemini -> TTS generation to warm the cache
 - `INTERJECTION_COOLDOWN = 2.0` seconds between realtime interjections
 - `MIN_BUFFER_DURATION_MS = 250` — silence tail before VAD flushes
 - `VAD_SPEECH_THRESHOLD = 0.4` — Silero speech probability threshold
@@ -242,10 +324,11 @@ without serialising preparation:
 - `DISABLE_META_TAG_VECTOR_MATCHING_FOR_IMPULSE = True` — if `True`, impulse
   text bypasses meta-tag extraction (legacy toggle)
 - `PLAY_RANDOM_SOUND_WHEN_IDLE = True` — idle ambient behaviour
-- `MAX_CHAT_LOG_ENTRIES = 10` — short-term context window
+- `MAX_CHAT_LOG_ENTRIES = 5` — short-term context window
 - `ml_executor` — shared `ThreadPoolExecutor(max_workers=3)` for Whisper /
   T5 / PANNs
 - `INTERLUDE_MONITOR_INTERVAL_S = 1.5` — thinking_monitor poll cadence
+- `SPATIAL_AUDIO_ENABLED` — master toggle for the global spatial pipeline
 
 ## Performance reference
 
@@ -262,6 +345,12 @@ Missing `.ann` / `.db` files are tolerated — services start empty.
 
 ## Security
 
-- `api_secrets.GEMINI_API_KEY` — do not commit. Rotate periodically.
+- `api_secrets.py` is **gitignored**. Do not commit it.
+- `GEMINI_API_KEY` is loaded from (in priority order):
+  1. `GEMINI_API_KEY` environment variable
+  2. `keys/gemini_key.txt`
+  3. `keys/api_secrets.txt` (legacy fallback)
+- The committed template is `api_secrets.py.example`.
+- Rotate keys periodically.
 - Windows-only (`win32gui`).
 - GPU strongly recommended (CUDA used for Whisper, T5, PANNs, Orpheus).
