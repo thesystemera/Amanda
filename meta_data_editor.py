@@ -1,12 +1,15 @@
 import sys
 import os
-from PyQt5.QtWidgets import QApplication, QMainWindow, QFileDialog, QTreeWidget, QTreeWidgetItem, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QWidget
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QFileDialog, QTreeWidget, QTreeWidgetItem,
+    QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout, QWidget, QCompleter
+)
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
-from PyQt5.QtCore import QUrl, Qt, QStringListModel, QThread, pyqtSignal
+from PyQt5.QtCore import QUrl, Qt, QStringListModel, QThread, pyqtSignal, QTimer
 from mutagen.id3 import ID3, TIT2, ID3NoHeaderError
-from PyQt5.QtWidgets import QCompleter
-from openai import OpenAI
-from PyQt5.QtCore import QTimer
+from google import genai
+from google.genai import types
+import config
 from datetime import datetime
 
 class AutoCompleteTrie:
@@ -47,22 +50,24 @@ class SuggestionGeneratorThread(QThread):
 
    def run(self):
        try:
-           client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
-           prompt = f"Suggest multiple emotive expressions in all lowercase and separated by commas for the given prefix: {self.prefix.lower()}. example: laughts could be laughs out loud, laughs, laughs awkwardly, laughs nervously. no numbering or commentary."
-           completion = client.chat.completions.create(
-               model="TheBloke/dolphin-2.6-mistral-7B-dpo-laser-GGUF",
-               messages=[
-                   {"role": "system", "content": prompt},
-                   {"role": "user", "content": self.prefix.lower()}
-               ],
-               temperature=0.7,
+           client = genai.Client(api_key=config.GEMINI_API_KEY)
+           prompt = (
+               f"Suggest multiple emotive expressions in all lowercase and separated by commas "
+               f"for the given prefix: {self.prefix.lower()}. "
+               f"Example: laughs could be laughs out loud, laughs, laughs awkwardly, laughs nervously. "
+               f"No numbering or commentary."
            )
-           response_text = completion.choices[0].message.content.strip()
-           suggestions = [suggestion.strip() for suggestion in response_text.split(",") if suggestion.strip()]
+           response = client.models.generate_content(
+               model=config.GEMINI_TASK_MODEL_NAME,
+               contents=prompt,
+               config=types.GenerateContentConfig(temperature=0.7, max_output_tokens=50),
+           )
+           text = response.text.strip() if response.text else ""
+           suggestions = [s.strip() for s in text.split(",") if s.strip()]
            suggestions = list(set(suggestions))
            self.suggestions_generated.emit(suggestions)
        except Exception as e:
-           print(f"Error generating model suggestions: {str(e)}")
+           print(f"Error generating model suggestions: {e}")
            self.suggestions_generated.emit([])
 
 class AudioPlayer(QMainWindow):
@@ -129,12 +134,12 @@ class AudioPlayer(QMainWindow):
        widget.setLayout(layout)
        self.setCentralWidget(widget)
 
-       screen_geometry = app.desktop().availableGeometry()
+       screen = app.primaryScreen().availableGeometry()
        self.setGeometry(
-           screen_geometry.width() // 4,
-           screen_geometry.height() // 4,
-           screen_geometry.width() // 2,
-           screen_geometry.height() // 2
+           screen.width() // 4,
+           screen.height() // 4,
+           screen.width() // 2,
+           screen.height() // 2
        )
 
    def open_directory(self):

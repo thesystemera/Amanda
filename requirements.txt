@@ -32,5 +32,8 @@ mutagen
 annoy
 pillow
 
+# GUI
+PyQt5
+
 # Optional / dev
 lameenc
