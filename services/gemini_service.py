@@ -31,6 +31,16 @@ class GeminiService:
             config.custom_print("Error", f"GeminiService: cache '{name}' failed: {e}")
             return None
 
+    def refresh_cache(self, name: str, system_instruction: str, model: str = None):
+        """Delete and recreate a cache (used when cached content changes, e.g. persona update)."""
+        old = self._caches.pop(name, None)
+        if old:
+            try:
+                self.client.caches.delete(name=old.name)
+            except Exception:
+                pass
+        return self.create_cache(name, system_instruction, model)
+
     def get_cache_name(self, name: str) -> str | None:
         cache = self._caches.get(name)
         return cache.name if cache else None

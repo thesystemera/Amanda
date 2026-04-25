@@ -48,7 +48,7 @@ class BrainService:
 
     def _init_system_prompts(self):
         """Define static system prompts. These are cached in warm_up() for efficiency."""
-        self._chat_system_instruction = (
+        self._chat_system_instruction_base = (
             "As [Assistant], you are currently engaged in a live audio (phone) conversation with [User]. You possess the "
             "capability to authentically express and simulate the entire spectrum of human emotions. Furthermore, you can "
             "fully understand and provide fitting responses to [User]'s questions, remarks, and emotional displays. You "
@@ -59,8 +59,10 @@ class BrainService:
             "2. 🎵audio-meta-data🎵 describes events in the [User]'s audio environment.\n"
             "3. [Assistant] MUST NOT disclose enclosed 🎵audio-meta-data🎵 by name.\n"
             "4. [Assistant] MUST keep responses proportional to the [User]'s input.\n"
+            "5. [Assistant] MUST maintain emotional stability and avoid escalating conflict or intensity.\n"
             "6. [Assistant] MUST frequently use filler words such as 'uhm', 'ohh', 'ahh'.\n"
-            "7. [Assistant] MUST incorporate natural stuttering and stumbled sentences.\n\n"
+            "7. [Assistant] MUST incorporate natural stuttering and stumbled sentences.\n"
+            "8. [Assistant] MUST vary proximity tags naturally — do not fixate on intimate or distant positioning.\n\n"
             "INSTRUCTIONS:\n"
             "1. Thoroughly review the TRANSCRIPT provided in the user message below.\n"
             "2. Utilize [timestamps] to aid temporal situational awareness.\n"
@@ -71,7 +73,7 @@ class BrainService:
             "- &0.5& = normal distance (moderate reverb)\n"
             "- &0.8& = across the room (wet, distant)\n"
             "- &1.0& = far away / echoing (very wet, faint)\n"
-            "Examples: 'I'm right here. &0.1&'  'Wait, what? &0.5&'  'I'll be back! &0.8&'\n\n"
+            "Examples: 'I'm right here. &0.1&'  'Wait, what? &0.5&'  'I'll be back! &0.8&'  'Can you hear me? &0.0&'  'Over here! &0.9&'\n\n"
             "CRITICAL:\n"
             "- [Assistant] will RESPOND with 'N/A' if [User] input is nonsensical.\n"
             "- [Assistant] MUST acknowledge and correct previous remarks if [Assistant] misspoke.\n"
@@ -199,6 +201,17 @@ class BrainService:
             "Example format: 0.1,0.0,0.0,0.8,0.2,0.1,0.4,0.0,*happy*,*surprised*"
         )
 
+    def _build_chat_system_instruction(self):
+        """Assemble the full chat system instruction including live persona/backstory."""
+        return (
+            self._chat_system_instruction_base
+            + "\n\nINFORMATION / BACKSTORY for LONG-TERM memory and conversational awareness:\n"
+            + "[Assistant Persona] " + self.assistant_persona + "\n"
+            + "[Assistant Profile] " + self.assistant_profile + "\n"
+            + "[User Persona] " + self.user_persona + "\n"
+            + "[User Profile] " + self.user_profile
+        )
+
     def _make_config(self, cache_key: str, temperature: float, max_tokens: int,
                      system_instruction: str = None, thinking_budget: int = 0):
         """Build GenerateContentConfig, using cached system instruction if available."""
@@ -230,6 +243,22 @@ class BrainService:
         for name, instruction, model in caches:
             if instruction:
                 self.gemini.create_cache(name, instruction, model)
+
+        # Health-check: log token count of the main chat system instruction so we know if caching is viable
+        try:
+            chat_sys = self._build_chat_system_instruction()
+            import asyncio
+            tok = asyncio.get_event_loop().run_until_complete(
+                self.gemini.count_tokens(model=config.GEMINI_CHAT_MODEL_NAME, contents=chat_sys)
+            )
+            if tok:
+                config.custom_print("Lifespan", f"BrainService: chat system prompt = {tok} tokens")
+                if tok < 1024:
+                    config.custom_print("Warning", f"BrainService: chat prompt is {tok} tokens — caching requires ≥1024")
+                else:
+                    config.custom_print("Lifespan", f"BrainService: chat cache is viable (≥1024 tokens)")
+        except Exception:
+            pass
 
     def load_state(self):
         if os.path.exists(config.LAST_STATE_PATH):
@@ -283,6 +312,9 @@ class BrainService:
             if res:
                 self._update_from_text(res)
                 self.save_state()
+                # Refresh the chat cache so the updated persona/backstory is cached
+                new_system_instruction = self._build_chat_system_instruction()
+                self.gemini.refresh_cache("chat", new_system_instruction, config.GEMINI_CHAT_MODEL_NAME)
         except Exception as e:
             config.custom_print("Error", f"Persona extraction failed: {e}")
 
@@ -309,16 +341,11 @@ class BrainService:
         current_timestamp = datetime.datetime.now().strftime("[%H:%M:%S]")
         user_input_content = " ".join([mood_str, audio_tags, transcribed_text]).strip()
 
+        chat_system_instruction = self._build_chat_system_instruction()
+
         dynamic_parts = []
         if meta_tags_prompt:
             dynamic_parts.append(meta_tags_prompt)
-        dynamic_parts.append(
-            "INFORMATION / BACKSTORY for LONG-TERM memory and conversational awareness:\n"
-            "[Assistant Persona] " + self.assistant_persona + "\n"
-            "[Assistant Profile] " + self.assistant_profile + "\n"
-            "[User Persona] " + self.user_persona + "\n"
-            "[User Profile] " + self.user_profile
-        )
         if sanitized_log:
             dynamic_parts.append("TRANSCRIPT for SHORT-TERM memory:\n" + "\n".join(sanitized_log))
 
@@ -328,11 +355,11 @@ class BrainService:
         contents = "\n\n".join(dynamic_parts)
 
         asyncio.create_task(self._log_token_count_later(
-            config.GEMINI_CHAT_MODEL_NAME, self._chat_system_instruction + "\n" + contents
+            config.GEMINI_CHAT_MODEL_NAME, chat_system_instruction + "\n" + contents
         ))
         config.custom_print("GPT", f"→ streaming | {user_input_content[:120]}")
         config.custom_print("Heard", f"[final] {transcribed_text}")
-        config.custom_print("System", self._chat_system_instruction)
+        config.custom_print("System", chat_system_instruction)
         config.custom_print("User", contents)
 
         stream = self.gemini.generate_content_stream(
@@ -342,7 +369,7 @@ class BrainService:
                 "chat",
                 config.REALTIME_GPT_GEMINI_TEMPERATURE,
                 1000,
-                self._chat_system_instruction,
+                chat_system_instruction,
                 thinking_budget=0,
             ),
         )
