@@ -3,12 +3,37 @@ from google import genai
 from google.genai import types
 import config
 
+
 class GeminiService:
 
     def __init__(self):
         config.custom_print("Lifespan", "GeminiService: initializing client...")
         self.client = genai.Client(api_key=config.GEMINI_API_KEY)
         self._warm = False
+        self._caches = {}
+
+    def create_cache(self, name: str, system_instruction: str, model: str = None):
+        """Create a cached context for a static system prompt."""
+        model = model or config.GEMINI_CHAT_MODEL_NAME
+        try:
+            cache = self.client.caches.create(
+                model=model,
+                config=types.CreateCachedContentConfig(
+                    system_instruction=system_instruction,
+                    display_name=f"amanda_{name}",
+                    ttl="7200s",
+                )
+            )
+            self._caches[name] = cache
+            config.custom_print("Lifespan", f"GeminiService: cache '{name}' created ({model}).")
+            return cache
+        except Exception as e:
+            config.custom_print("Error", f"GeminiService: cache '{name}' failed: {e}")
+            return None
+
+    def get_cache_name(self, name: str) -> str | None:
+        cache = self._caches.get(name)
+        return cache.name if cache else None
 
     async def warm_up(self):
         if self._warm:

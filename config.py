@@ -117,7 +117,7 @@ MP3_BITRATE = 128
 # Unified audio chunk size (mono int16 bytes). This drives slice resolution.
 # 1024 bytes @ 24kHz mono = 512 frames = ~21ms → ~47 slices/sec
 # Bump to 2048 if CPU struggles. Must be divisible by 4.
-AUDIO_CHUNK_SIZE = 1024
+AUDIO_CHUNK_SIZE = 512
 SILENCE_CACHE_DURATION_S = 0.1
 GENERATE_TTS = True
 
