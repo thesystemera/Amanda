@@ -76,9 +76,6 @@ class AudioPlayer(QMainWindow):
        self.setWindowTitle("Audio Meta Tag Editor")
        self.player = QMediaPlayer()
        self.suggestion_timer = None
-       font = app.font()
-       font.setPointSize(14)
-       app.setFont(font)
        self.setStyleSheet("""
            QWidget {
                background-color: #2B2B2B;
@@ -269,6 +266,9 @@ class AudioPlayer(QMainWindow):
 
 if __name__ == "__main__":
    app = QApplication(sys.argv)
+   font = app.font()
+   font.setPointSize(14)
+   app.setFont(font)
    player = AudioPlayer()
    player.show()
    sys.exit(app.exec_())

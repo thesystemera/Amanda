@@ -43,7 +43,8 @@ class AudioJob:
             if self.on_first_feed is not None and not self.pcm_accumulator:
                 cb = self.on_first_feed
                 self.on_first_feed = None
-                cb()
+                if callable(cb):
+                    cb()
             self.queue.put(chunk)
             self.pcm_accumulator.extend(chunk)
 
