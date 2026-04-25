@@ -232,7 +232,7 @@ class BrainService:
 
         # Create context caches for static system prompts
         caches = [
-            ("chat", self._chat_system_instruction, config.GEMINI_CHAT_MODEL_NAME),
+            ("chat", self._build_chat_system_instruction(), config.GEMINI_CHAT_MODEL_NAME),
             ("interject", self._interject_system_instruction, config.GEMINI_TASK_MODEL_NAME),
             ("interrupt", self._interrupt_system_instruction, config.GEMINI_TASK_MODEL_NAME),
             ("meta", self._meta_system_instruction, config.GEMINI_TASK_MODEL_NAME),
