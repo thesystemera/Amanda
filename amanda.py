@@ -625,6 +625,7 @@ class AmandaApp:
 
     def exit_app(self):
         self.brain.save_state()
+        self.gemini.cleanup_caches()
         self._safe_call_soon(self.loop.stop)
 
     async def _startup(self):

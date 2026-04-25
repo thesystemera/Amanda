@@ -21,7 +21,7 @@ class GeminiService:
                 config=types.CreateCachedContentConfig(
                     system_instruction=system_instruction,
                     display_name=f"amanda_{name}",
-                    ttl="7200s",
+                    ttl="3600s",
                 )
             )
             self._caches[name] = cache
@@ -40,6 +40,16 @@ class GeminiService:
             except Exception:
                 pass
         return self.create_cache(name, system_instruction, model)
+
+    def cleanup_caches(self):
+        """Delete all active caches to stop storage billing. Call on shutdown."""
+        for name, cache in list(self._caches.items()):
+            try:
+                self.client.caches.delete(name=cache.name)
+                config.custom_print("Lifespan", f"GeminiService: cache '{name}' deleted.")
+            except Exception as e:
+                config.custom_print("Error", f"GeminiService: failed to delete cache '{name}': {e}")
+        self._caches.clear()
 
     def get_cache_name(self, name: str) -> str | None:
         cache = self._caches.get(name)
